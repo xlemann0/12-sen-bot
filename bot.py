@@ -37,9 +37,13 @@ router = Router()
 def init_db():
   conn = sqlite3.connect("dorm_bot.db")
   cursor = conn.cursor()
-  cursor.execute(
-      "CREATE TABLE IF NOT EXISTS admins (telegram_id INTEGER PRIMARY KEY)"
-  )
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            telegram_id INTEGER PRIMARY KEY,
+            first_name TEXT,
+            last_name TEXT
+        )
+    """)
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS students (
             telegram_id INTEGER PRIMARY KEY,
@@ -70,8 +74,9 @@ def init_db():
         )
     """)
   cursor.execute(
-      "INSERT OR IGNORE INTO admins (telegram_id) VALUES (?)",
-      (SUPER_ADMIN_ID,),
+      "INSERT OR IGNORE INTO admins (telegram_id, first_name, last_name) VALUES"
+      " (?, ?, ?)",
+      (SUPER_ADMIN_ID, "Super", "Admin"),
   )
   cursor.execute(
       "INSERT OR IGNORE INTO settings (key, value) VALUES ('check_in_time',"
@@ -149,6 +154,8 @@ class DeleteAdminStates(StatesGroup):
 
 class AdminSettingsStates(StatesGroup):
   waiting_for_new_admin_id = State()
+  waiting_for_new_admin_first_name = State()
+  waiting_for_new_admin_last_name = State()
   waiting_for_check_in_time = State()
   waiting_for_late_limit = State()
 
@@ -189,7 +196,7 @@ def main_menu(tg_id: int):
             KeyboardButton(text="➕ Admin qo'shish"),
             KeyboardButton(text="🗑 Adminni o'chirish"),
         ],
-        [KeyboardButton(text="sh 🛡 Adminlar ro'yxati".replace("sh ", ""))],  # Adminlar ro'yxati tugmasi
+        [KeyboardButton(text="Adminlar ro'yxati")],
         [
             KeyboardButton(text="🗑 Talabani o'chirish"),
             KeyboardButton(text="🗑 Barcha talabalarni o'chirish"),
@@ -293,7 +300,6 @@ async def get_admin_qr(message: Message):
   )
 
 
-# --- WEB APP HANDLER (QR TOKEN ONLY) ---
 @router.message(F.web_app_data)
 async def handle_web_app(message: Message):
   tg_id = message.from_user.id
@@ -369,7 +375,6 @@ async def handle_web_app(message: Message):
     conn.close()
 
 
-# --- BARCHA TALABALARNI O'CHIRISH ---
 @router.message(F.text == "🗑 Barcha talabalarni o'chirish")
 async def ask_delete_all_students(message: Message, state: FSMContext):
   if message.from_user.id != SUPER_ADMIN_ID:
@@ -412,7 +417,6 @@ async def confirm_delete_all_students(message: Message, state: FSMContext):
     )
 
 
-# --- STATISTIKA VA DAVOMATNI KO'RISH ---
 @router.message(F.text == "📊 Mening davomatim")
 async def my_attendance(message: Message):
   if not is_student(message.from_user.id):
@@ -682,45 +686,81 @@ async def list_admins(message: Message):
     return
   conn = sqlite3.connect("dorm_bot.db")
   cursor = conn.cursor()
-  cursor.execute("SELECT telegram_id FROM admins")
+  cursor.execute("SELECT telegram_id, first_name, last_name FROM admins")
   admins = cursor.fetchall()
   conn.close()
 
   text = "🛡 **Tizimdagi adminlar ro'yxati:**\n\n"
   for idx, a in enumerate(admins, 1):
-    role = " ⭐ (Super Admin)" if a[0] == SUPER_ADMIN_ID else ""
-    text += f"{idx}. ID: `{a[0]}`{role}\n"
+    role = " ⭐ (Super Admin)" if a[0] == SUPER_ADMIN_ID else " 👨‍💼 (Admin)"
+    name_str = f"{a[1]} {a[2]}" if a[1] and a[2] else "Noma'lum"
+    text += f"{idx}. **{name_str}**\n🆔 ID: `{a[0]}`{role}\n-------------------\n"
 
   await message.answer(text, parse_mode="Markdown")
 
 
-# --- ADMIN QO'SHISH (FAQAT SUPER ADMIN) ---
+# --- ADMIN QO'SHISH (YANGI BOSQICH: ID, ISM, FAMILIYA) ---
 @router.message(F.text == "➕ Admin qo'shish")
 async def start_add_admin(message: Message, state: FSMContext):
   if message.from_user.id != SUPER_ADMIN_ID:
     return await message.answer("❌ Bu amalni faqat Super Admin bajara oladi!")
-  await message.answer("Yangi adminning Telegram ID raqamini kiriting:")
+  await message.answer(
+      "1️⃣ Yangi adminning **Telegram ID** raqamini kiriting:", parse_mode="Markdown"
+  )
   await state.set_state(AdminSettingsStates.waiting_for_new_admin_id)
 
 
 @router.message(AdminSettingsStates.waiting_for_new_admin_id)
-async def process_new_admin(message: Message, state: FSMContext):
+async def process_new_admin_id(message: Message, state: FSMContext):
   if message.from_user.id != SUPER_ADMIN_ID:
     await state.clear()
     return
   if not message.text.isdigit():
     return await message.answer("Faqat raqam kiriting:")
-  new_admin_id = int(message.text)
+  await state.update_data(new_admin_id=int(message.text))
+  await message.answer(
+      "2️⃣ Yangi adminning **Ismini** kiriting:", parse_mode="Markdown"
+  )
+  await state.set_state(AdminSettingsStates.waiting_for_new_admin_first_name)
+
+
+@router.message(AdminSettingsStates.waiting_for_new_admin_first_name)
+async def process_new_admin_first_name(message: Message, state: FSMContext):
+  if message.from_user.id != SUPER_ADMIN_ID:
+    await state.clear()
+    return
+  await state.update_data(new_admin_fname=message.text)
+  await message.answer(
+      "3️⃣ Yangi adminning **Familiyasini** kiriting:", parse_mode="Markdown"
+  )
+  await state.set_state(AdminSettingsStates.waiting_for_new_admin_last_name)
+
+
+@router.message(AdminSettingsStates.waiting_for_new_admin_last_name)
+async def process_new_admin_last_name(message: Message, state: FSMContext):
+  if message.from_user.id != SUPER_ADMIN_ID:
+    await state.clear()
+    return
+
+  data = await state.get_data()
+  admin_id = data["new_admin_id"]
+  fname = data["new_admin_fname"]
+  lname = message.text
 
   conn = sqlite3.connect("dorm_bot.db")
   cursor = conn.cursor()
   cursor.execute(
-      "INSERT OR IGNORE INTO admins (telegram_id) VALUES (?)", (new_admin_id,)
+      "INSERT OR REPLACE INTO admins (telegram_id, first_name, last_name)"
+      " VALUES (?, ?, ?)",
+      (admin_id, fname, lname),
   )
   conn.commit()
   conn.close()
+
   await message.answer(
-      "✅ Yangi admin muvaffaqiyatli qo'shildi!",
+      f"✅ Yangi admin muvaffaqiyatli qo'shildi!\n👤 Ism Familiya: {fname}"
+      f" {lname}\n🆔 ID: `{admin_id}`",
+      parse_mode="Markdown",
       reply_markup=main_menu(message.from_user.id),
   )
   await state.clear()
