@@ -185,7 +185,11 @@ def main_menu(tg_id: int):
             KeyboardButton(text="❌ Kelmaganlar"),
         ],
         [KeyboardButton(text="🔍 Qidirish va Hisobot")],
-        [KeyboardButton(text="➕ Admin qo'shish"), KeyboardButton(text="🗑 Adminni o'chirish")],
+        [
+            KeyboardButton(text="➕ Admin qo'shish"),
+            KeyboardButton(text="🗑 Adminni o'chirish"),
+        ],
+        [KeyboardButton(text="sh 🛡 Adminlar ro'yxati".replace("sh ", ""))],  # Adminlar ro'yxati tugmasi
         [
             KeyboardButton(text="🗑 Talabani o'chirish"),
             KeyboardButton(text="🗑 Barcha talabalarni o'chirish"),
@@ -671,16 +675,39 @@ async def process_delete_student(message: Message, state: FSMContext):
   await state.clear()
 
 
-@router.message(F.text == "➕ Admin qo'shish")
-async def start_add_admin(message: Message, state: FSMContext):
+# --- ADMINLAR RO'YXATI ---
+@router.message(F.text == "Adminlar ro'yxati")
+async def list_admins(message: Message):
   if not is_admin(message.from_user.id):
     return
+  conn = sqlite3.connect("dorm_bot.db")
+  cursor = conn.cursor()
+  cursor.execute("SELECT telegram_id FROM admins")
+  admins = cursor.fetchall()
+  conn.close()
+
+  text = "🛡 **Tizimdagi adminlar ro'yxati:**\n\n"
+  for idx, a in enumerate(admins, 1):
+    role = " ⭐ (Super Admin)" if a[0] == SUPER_ADMIN_ID else ""
+    text += f"{idx}. ID: `{a[0]}`{role}\n"
+
+  await message.answer(text, parse_mode="Markdown")
+
+
+# --- ADMIN QO'SHISH (FAQAT SUPER ADMIN) ---
+@router.message(F.text == "➕ Admin qo'shish")
+async def start_add_admin(message: Message, state: FSMContext):
+  if message.from_user.id != SUPER_ADMIN_ID:
+    return await message.answer("❌ Bu amalni faqat Super Admin bajara oladi!")
   await message.answer("Yangi adminning Telegram ID raqamini kiriting:")
   await state.set_state(AdminSettingsStates.waiting_for_new_admin_id)
 
 
 @router.message(AdminSettingsStates.waiting_for_new_admin_id)
 async def process_new_admin(message: Message, state: FSMContext):
+  if message.from_user.id != SUPER_ADMIN_ID:
+    await state.clear()
+    return
   if not message.text.isdigit():
     return await message.answer("Faqat raqam kiriting:")
   new_admin_id = int(message.text)
@@ -701,8 +728,8 @@ async def process_new_admin(message: Message, state: FSMContext):
 
 @router.message(F.text == "🗑 Adminni o'chirish")
 async def start_delete_admin(message: Message, state: FSMContext):
-  if not is_admin(message.from_user.id):
-    return
+  if message.from_user.id != SUPER_ADMIN_ID:
+    return await message.answer("❌ Bu amalni faqat Super Admin bajara oladi!")
   await message.answer(
       "O'chirmoqchi bo'lgan adminning **Telegram ID** raqamini kiriting:"
   )
@@ -711,6 +738,9 @@ async def start_delete_admin(message: Message, state: FSMContext):
 
 @router.message(DeleteAdminStates.waiting_for_tg_id)
 async def process_delete_admin(message: Message, state: FSMContext):
+  if message.from_user.id != SUPER_ADMIN_ID:
+    await state.clear()
+    return
   if not message.text.isdigit():
     return await message.answer("Faqat raqam kiriting:")
   admin_id = int(message.text)
